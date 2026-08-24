@@ -22,13 +22,12 @@ public class VergProperties {
     
         @Value("${elastic.required.field.org.json.path}")
         private String elasticOrgJsonPath;
-    
-        @Value("${elastic.required.field.department.json.path}")
-        private String elasticDepartmentJsonPath;
-    
         @Value("${elastic.required.field.catalogue.json.path}")
         private String elasticCatalogueJsonPath;
     
         @Value("${elastic.required.field.catalogueassignment.json.path}")
         private String elasticCatalogueassignmentJsonPath;
+    
+        @Value("${elastic.required.field.departmenttype.json.path}")
+        private String elasticDepartmenttypeJsonPath;
     }

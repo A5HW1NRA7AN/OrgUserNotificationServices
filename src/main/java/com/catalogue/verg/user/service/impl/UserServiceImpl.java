@@ -46,9 +46,11 @@ import org.springframework.web.multipart.MultipartFile;
 import java.sql.Timestamp;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 // import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -101,6 +103,22 @@ public class UserServiceImpl implements UserService {
      */
     private static final String AUDIT_ENTITY_NAME = "user";
 
+    /**
+     * Login-identifier uniqueness. Declared here rather than in {@code Constants} because that
+     * file is owned by the {@code main.py} generator, which rewrites it per catalogue.
+     */
+    private static final String PHONE_NUMBER = "phoneNumber";
+    private static final String EMAIL_ALREADY_REGISTERED = "Email already registered";
+    private static final String PHONE_ALREADY_REGISTERED = "Phone number already registered";
+
+    /**
+     * BCrypt output is self-describing — {@code $2a$<cost>$<22-char salt><31-char hash>} — which
+     * lets {@link #hashRawSecrets} tell a plaintext secret from one already hashed by an earlier
+     * write.
+     */
+    private static final Pattern BCRYPT_HASH =
+            Pattern.compile("^\\$2[aby]\\$\\d{2}\\$[./A-Za-z0-9]{53}$");
+
     private Logger logger = LoggerFactory.getLogger(UserServiceImpl.class);
 
     @Value("${spring.redis.cacheTtl}")
@@ -114,6 +132,13 @@ public class UserServiceImpl implements UserService {
 
         log.debug("UserServiceImpl::createUser:validated the payload");
 
+        // Canonicalise the login identifiers, then reject the payload if another live record
+        // already holds them. Both run before the auth_service call below, so a duplicate is
+        // never published to Keycloak first, and outside the try so the 409 is not re-wrapped
+        // as a generic 500.
+        JsonNode userRequest = normaliseIdentifiers(userEntity);
+        ensureIdentifiersUnique(userRequest, null);
+
         // Generate Primary Key up front: auth_service is told the userId this catalogue will use.
         String primaryID = primaryKeyUtil.generateKey(Constants.USER_VALIDATION_FILE_JSON);
 
@@ -124,12 +149,12 @@ public class UserServiceImpl implements UserService {
             // auth_service owns the identity: nothing is persisted here unless it accepts the user.
             // Kept outside the try below so a rejection is not re-wrapped as a generic 500.
             ResponseEntity<Map<String, Object>> authResponse = authUserService.createAuthUser(
-                    textValue(userEntity, Constants.FIRST_NAME),
-                    textValue(userEntity, Constants.LAST_NAME),
-                    textValue(userEntity, Constants.EMAIL),
+                    textValue(userRequest, Constants.FIRST_NAME),
+                    textValue(userRequest, Constants.LAST_NAME),
+                    textValue(userRequest, Constants.EMAIL),
                     primaryID,
-                    textValue(userEntity, Constants.ORG_ID_RQST),
-                    textValue(userEntity, Constants.ENTITY_TYPE));
+                    textValue(userRequest, Constants.ORG_ID_RQST),
+                    textValue(userRequest, Constants.ENTITY_TYPE));
             if (authResponse == null || !authResponse.getStatusCode().is2xxSuccessful()) {
                 log.error("UserServiceImpl::createUser::auth_service returned a non-2xx status: {}",
                         authResponse == null ? "no response" : authResponse.getStatusCode());
@@ -139,7 +164,7 @@ public class UserServiceImpl implements UserService {
             log.info("UserServiceImpl::createUser::auth user created, proceeding to persist userId: {}", primaryID);
         } 
         // Hash the credentials before they reach postgres, ES or redis; raw values are not stored.
-        JsonNode userPayload = HashUtil.hashSecrets(userEntity, Constants.PASSWORD, Constants.PIN);
+        JsonNode userPayload = HashUtil.hashSecrets(userRequest, Constants.PASSWORD, Constants.PIN);
 
         try {
             log.info("UserServiceImpl::createUser:creating user");
@@ -221,7 +246,10 @@ public class UserServiceImpl implements UserService {
     public CustomResponse verifyUser(JsonNode verifyRequest) {
         log.info("UserServiceImpl::verifyUser:entered the method");
         CustomResponse response = new CustomResponse();
-        String email = textValue(verifyRequest, Constants.EMAIL);
+        // Normalised for the lookup below: emails are stored lower-cased, and the ES keyword
+        // filter is case-sensitive, so the raw input would only match if the caller reproduced
+        // the exact casing used at registration.
+        String email = normaliseEmail(textValue(verifyRequest, Constants.EMAIL));
         String password = textValue(verifyRequest, Constants.PASSWORD);
 
         if (StringUtils.isEmpty(email) || StringUtils.isEmpty(password)) {
@@ -292,6 +320,139 @@ public class UserServiceImpl implements UserService {
             return null;
         }
         return data.get(0);
+    }
+
+    /**
+     * Returns a copy of the payload with any plaintext credentials replaced by their BCrypt hash,
+     * so raw values never reach postgres, Elasticsearch or Redis. {@link #createUser} hashes via
+     * {@link HashUtil#hashSecrets}; the update / draft / promote paths use this instead because
+     * they can receive a payload that already carries hashed credentials — {@code read} echoes
+     * them, so a client doing read-then-write would round-trip a hash back in. Re-hashing that
+     * value would lock the user out, since the stored hash would no longer correspond to any
+     * password they know. Already-hashed fields are therefore left alone.
+     */
+    private JsonNode hashRawSecrets(JsonNode payload) {
+        if (payload == null || !payload.isObject()) {
+            return payload;
+        }
+        ObjectNode copy = payload.deepCopy();
+        for (String field : List.of(Constants.PASSWORD, Constants.PIN)) {
+            String value = textValue(copy, field);
+            if (StringUtils.isEmpty(value) || BCRYPT_HASH.matcher(value).matches()) {
+                continue;
+            }
+            copy.put(field, HashUtil.encode(value));
+        }
+        return copy;
+    }
+
+    /**
+     * Canonical form of an email address: trimmed and lower-cased. Applied on every write and on
+     * the verify lookup, so a user who registered as {@code A.User@x.org} can sign in whatever
+     * casing they type. Also what makes the uniqueness check below meaningful — without it, a
+     * duplicate is admitted just by changing one letter's case, and Keycloak (which compares
+     * addresses case-insensitively) would then reject the record this catalogue accepted.
+     */
+    private String normaliseEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Returns a copy of the payload with the login identifiers canonicalised — email trimmed and
+     * lower-cased, phone number trimmed. Blank or absent fields are left as they are, so relaxed
+     * (draft) payloads pass through untouched.
+     */
+    private JsonNode normaliseIdentifiers(JsonNode payload) {
+        if (payload == null || !payload.isObject()) {
+            return payload;
+        }
+        ObjectNode normalised = payload.deepCopy();
+        String email = textValue(normalised, Constants.EMAIL);
+        if (!StringUtils.isEmpty(email)) {
+            normalised.put(Constants.EMAIL, normaliseEmail(email));
+        }
+        String phoneNumber = textValue(normalised, PHONE_NUMBER);
+        if (!StringUtils.isEmpty(phoneNumber)) {
+            normalised.put(PHONE_NUMBER, phoneNumber.trim());
+        }
+        return normalised;
+    }
+
+    /**
+     * Rejects the payload with a 409 when its email or phone number is already held by another
+     * live record. Must be called with the normalised payload.
+     *
+     * <p>The catalogue owns this check rather than the auth layer: email is what {@link #verifyUser}
+     * resolves a user by, so without uniqueness that lookup is undefined — it returns whichever
+     * document Elasticsearch scored first, and with it the userId that ends up in the issued
+     * token. auth_service holds no user table and sees one publish at a time, and Keycloak's own
+     * duplicate rejection never fires for a DRAFT or PENDING user that has not reached it yet.
+     *
+     * <p>{@code user_index} is the right thing to check against because it is exactly the set of
+     * live records: every write path indexes, and {@link #delete} removes the document — so a
+     * soft-deleted user releases its email and phone for re-registration, matching what
+     * auth_user_delete does in Keycloak. INACTIVE records stay indexed and keep holding theirs.
+     *
+     * @param selfUserId record being updated, whose own values must not count as a collision;
+     *                   null on create.
+     */
+    private void ensureIdentifiersUnique(JsonNode payload, String selfUserId) {
+        if (payload == null || !payload.isObject()) {
+            return;
+        }
+        ensureFieldUnique(Constants.EMAIL, textValue(payload, Constants.EMAIL), selfUserId,
+                EMAIL_ALREADY_REGISTERED);
+        ensureFieldUnique(PHONE_NUMBER, textValue(payload, PHONE_NUMBER), selfUserId,
+                PHONE_ALREADY_REGISTERED);
+    }
+
+    private void ensureFieldUnique(String field, String value, String selfUserId, String message) {
+        if (StringUtils.isEmpty(value)) {
+            // Relaxed draft payloads may omit the field entirely; nothing to collide with yet.
+            return;
+        }
+        String holderId;
+        try {
+            holderId = findIdentifierHolder(field, value, selfUserId);
+        } catch (Exception e) {
+            log.error("UserServiceImpl::ensureFieldUnique:lookup failed for field: {}", field, e);
+            throw new CustomException("error while processing", e.getMessage(),
+                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+        // Thrown outside the try so the 409 is not caught above and re-wrapped as a generic 500.
+        if (holderId != null) {
+            log.warn("UserServiceImpl::ensureFieldUnique:{} already held by userId: {}",
+                    field, holderId);
+            throw new CustomException(Constants.FAILED_CONST, message, HttpStatus.CONFLICT);
+        }
+    }
+
+    /** userId of a live record already holding the value, or null when the value is free. */
+    private String findIdentifierHolder(String field, String value, String selfUserId)
+            throws Exception {
+        SearchCriteria searchCriteria = new SearchCriteria();
+        HashMap<String, Object> filterCriteriaMap = new HashMap<>();
+        filterCriteriaMap.put(field, value);
+        searchCriteria.setFilterCriteriaMap(filterCriteriaMap);
+        searchCriteria.setRequestedFields(List.of(field));
+        searchCriteria.setPageNumber(0);
+        // Two hits, not one: on update the record's own document is a legitimate match, and a
+        // second holder behind it must still be visible.
+        searchCriteria.setPageSize(2);
+
+        SearchResult searchResult =
+                esUtilService.searchDocuments(Constants.USER_INDEX_NAME, searchCriteria);
+        JsonNode data = searchResult == null ? null : searchResult.getData();
+        if (data == null || !data.isArray()) {
+            return null;
+        }
+        for (JsonNode hit : data) {
+            String hitId = textValue(hit, Constants.ID);
+            if (!StringUtils.isEmpty(hitId) && !hitId.equals(selfUserId)) {
+                return hitId;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -373,6 +534,12 @@ public class UserServiceImpl implements UserService {
         payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userEntity);
         log.debug("UserServiceImpl::updateUser:validated the payload");
 
+        // Enforced on update as well as create: otherwise a duplicate is reached simply by
+        // editing an existing record's email onto one already in use. The record's own values
+        // are excluded, so a no-op update of the same email is not a collision with itself.
+        JsonNode userRequest = hashRawSecrets(normaliseIdentifiers(userEntity));
+        ensureIdentifiersUnique(userRequest, id);
+
         try {
             // Check if the entity exists in the database
             Optional<UserEntity> entityOptional = userRepository.findById(id);
@@ -395,13 +562,13 @@ public class UserServiceImpl implements UserService {
 
             // Replace payload; preserve id / createdOn / status, bump updatedOn
             Timestamp currentTime = new Timestamp(System.currentTimeMillis());
-            userEntity1.setData(userEntity);
+            userEntity1.setData(userRequest);
             userEntity1.setUpdatedOn(currentTime);
             userRepository.save(userEntity1);
             log.info("UserServiceImpl::updateUser:updated record in postgres for id: {}", id);
 
             // Re-index the document in Elasticsearch (filtered to whitelisted fields)
-            ObjectNode jsonNode = buildDocument(userEntity, userEntity1.getStatus(),
+            ObjectNode jsonNode = buildDocument(userRequest, userEntity1.getStatus(),
                     userEntity1.getCreatedOn(), currentTime);
             Map<String, Object> map = objectMapper.convertValue(jsonNode, Map.class);
             esUtilService.updateDocument(Constants.USER_INDEX_NAME, Constants.INDEX_TYPE,
@@ -519,6 +686,13 @@ public class UserServiceImpl implements UserService {
         // Relaxed validation: types/structure enforced, but required fields may be missing
         payloadValidation.validatePayloadRelaxed(Constants.USER_VALIDATION_FILE_JSON, userEntity);
         log.debug("UserServiceImpl::draftUser:validated the payload (relaxed)");
+
+        // Drafts are indexed, so they hold their identifiers and must be checked too — a draft
+        // is the one case Keycloak cannot catch, since it never reaches Keycloak. Relaxed
+        // validation allows the fields to be absent, which the check treats as nothing to claim.
+        JsonNode userRequest = hashRawSecrets(normaliseIdentifiers(userEntity));
+        ensureIdentifiersUnique(userRequest, null);
+
         try {
             UserEntity userEntity1 = new UserEntity();
             String primaryID = primaryKeyUtil.generateKey(Constants.USER_VALIDATION_FILE_JSON);
@@ -527,12 +701,12 @@ public class UserServiceImpl implements UserService {
             userEntity1.setCreatedOn(currentTime);
             userEntity1.setUpdatedOn(currentTime);
             userEntity1.setStatus(Constants.DRAFT);
-            userEntity1.setData(userEntity);
+            userEntity1.setData(userRequest);
 
             userRepository.save(userEntity1);
             log.info("UserServiceImpl::draftUser::persisted draft in postgres");
 
-            ObjectNode jsonNode = buildDocument(userEntity, Constants.DRAFT, currentTime, currentTime);
+            ObjectNode jsonNode = buildDocument(userRequest, Constants.DRAFT, currentTime, currentTime);
             Map<String, Object> map = objectMapper.convertValue(jsonNode, Map.class);
             esUtilService.addDocument(Constants.USER_INDEX_NAME, Constants.INDEX_TYPE,
                     String.valueOf(primaryID), map, vergProperties.getElasticUserJsonPath());
@@ -565,6 +739,12 @@ public class UserServiceImpl implements UserService {
         // Full validation: all required fields must be present to submit for approval
         payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userEntity);
         log.debug("UserServiceImpl::addUser:validated the payload");
+
+        // The promotion carries a full payload that may differ from the draft, so the
+        // identifiers are re-checked here rather than trusted from draftUser.
+        JsonNode userRequest = hashRawSecrets(normaliseIdentifiers(userEntity));
+        ensureIdentifiersUnique(userRequest, id);
+
         try {
             Optional<UserEntity> entityOptional = userRepository.findById(id);
             if (entityOptional.isEmpty()) {
@@ -583,13 +763,13 @@ public class UserServiceImpl implements UserService {
             }
             Timestamp currentTime = new Timestamp(System.currentTimeMillis());
             JsonNode auditBefore = userEntity1.getData();
-            userEntity1.setData(userEntity);
+            userEntity1.setData(userRequest);
             userEntity1.setStatus(Constants.PENDING);
             userEntity1.setUpdatedOn(currentTime);
             userRepository.save(userEntity1);
             log.info("UserServiceImpl::addUser:submitted record {} for approval (PENDING)", id);
 
-            ObjectNode jsonNode = buildDocument(userEntity, Constants.PENDING,
+            ObjectNode jsonNode = buildDocument(userRequest, Constants.PENDING,
                     userEntity1.getCreatedOn(), currentTime);
             Map<String, Object> map = objectMapper.convertValue(jsonNode, Map.class);
             esUtilService.updateDocument(Constants.USER_INDEX_NAME, Constants.INDEX_TYPE,
