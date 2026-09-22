@@ -44,7 +44,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.sql.Timestamp;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -234,10 +233,11 @@ public class UserServiceImpl implements UserService {
         }
 
         try {
-            // 1. Does the email exist? Exact match against the indexed record.
-            JsonNode userDocument = findIndexedUserByEmail(email);
-            if (userDocument == null) {
-                log.warn("UserServiceImpl::verifyUser:no indexed user found for the given email");
+            // 1. Does the email exist? Postgres, not Elasticsearch: the credential lives only here,
+            // so the login path depends on one store and cannot be broken by an index change.
+            UserEntity user = findUserByEmail(email);
+            if (user == null) {
+                log.warn("UserServiceImpl::verifyUser:no user found for the given email");
                 response.setResponseCode(HttpStatus.UNAUTHORIZED);
                 response.setMessage(Constants.INVALID_CREDENTIALS);
                 return response;
@@ -245,15 +245,17 @@ public class UserServiceImpl implements UserService {
 
             // 2. Does the plaintext password match the stored hash? BCrypt salts per call, so the
             // stored value can only be checked with matches() — never by re-hashing and comparing.
-            if (!HashUtil.matches(password, textValue(userDocument, Constants.PASSWORD))) {
+            if (!HashUtil.matches(password, textValue(user.getData(), Constants.PASSWORD))) {
                 log.warn("UserServiceImpl::verifyUser:password mismatch for the given email");
                 response.setResponseCode(HttpStatus.UNAUTHORIZED);
                 response.setMessage(Constants.INVALID_CREDENTIALS);
                 return response;
             }
 
-            // 3. Is the record live? DRAFT / PENDING / INACTIVE / DELETED must not verify.
-            String status = textValue(userDocument, Constants.STATUS);
+            // 3. Is the record live? DRAFT / PENDING / INACTIVE / DELETED must not verify. Read from
+            // the status COLUMN: ES writes are swallowed on failure, so its copy can be stale-ACTIVE
+            // for a user postgres already deactivated.
+            String status = user.getStatus();
             if (!Constants.ACTIVE.equals(status)) {
                 log.warn("UserServiceImpl::verifyUser:user is {}, not ACTIVE", status);
                 response.setResponseCode(HttpStatus.FORBIDDEN);
@@ -262,8 +264,8 @@ public class UserServiceImpl implements UserService {
             }
 
             log.info("UserServiceImpl::verifyUser:credentials verified for userId: {}",
-                    textValue(userDocument, Constants.ID));
-            response.getResult().put(Constants.USER_ID_RQST, textValue(userDocument, Constants.ID));
+                    user.getUserId());
+            response.getResult().put(Constants.USER_ID_RQST, user.getUserId());
             response.getResult().put(Constants.EMAIL, email);
             response.getResult().put(Constants.STATUS, status);
             response.setMessage(Constants.SUCCESSFULLY_VERIFIED);
@@ -277,23 +279,21 @@ public class UserServiceImpl implements UserService {
     }
 
    
-    private JsonNode findIndexedUserByEmail(String email) throws Exception {
-        SearchCriteria searchCriteria = new SearchCriteria();
-        HashMap<String, Object> filterCriteriaMap = new HashMap<>();
-        filterCriteriaMap.put(Constants.EMAIL, email);
-        searchCriteria.setFilterCriteriaMap(filterCriteriaMap);
-        searchCriteria.setRequestedFields(
-                List.of(Constants.EMAIL, Constants.PASSWORD, Constants.STATUS));
-        searchCriteria.setPageNumber(0);
-        searchCriteria.setPageSize(1);
-
-        SearchResult searchResult =
-                esUtilService.searchDocuments(Constants.USER_INDEX_NAME, searchCriteria);
-        JsonNode data = searchResult == null ? null : searchResult.getData();
-        if (data == null || !data.isArray() || data.size() == 0) {
+    /**
+     * The user a login email belongs to, or null. Reads postgres directly: the password hash is
+     * never mirrored into Elasticsearch, and the status column is authoritative where the index
+     * can be stale.
+     */
+    private UserEntity findUserByEmail(String email) {
+        List<UserEntity> matches = userRepository.findByEmail(email);
+        if (matches.isEmpty()) {
             return null;
         }
-        return data.get(0);
+        if (matches.size() > 1) {
+            // Nothing enforces email uniqueness. Oldest wins, so the winner is at least stable.
+            log.warn("UserServiceImpl::findUserByEmail:{} records share this email", matches.size());
+        }
+        return matches.get(0);
     }
 
     @Override
