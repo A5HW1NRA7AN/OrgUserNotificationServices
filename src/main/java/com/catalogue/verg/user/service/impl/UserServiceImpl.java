@@ -100,6 +100,10 @@ public class UserServiceImpl implements UserService {
      */
     private static final String AUDIT_ENTITY_NAME = "user";
 
+    /** Held in postgres only, never mirrored into Elasticsearch, redis or a response body. */
+    private static final List<String> CREDENTIAL_FIELDS =
+            List.of(Constants.PASSWORD, Constants.PIN);
+
     private Logger logger = LoggerFactory.getLogger(UserServiceImpl.class);
 
     @Value("${spring.redis.cacheTtl}")
@@ -765,6 +769,9 @@ public class UserServiceImpl implements UserService {
         if (data != null && data.isObject()) {
             node.setAll((ObjectNode) data);
         }
+        // Every ES document, redis entry and create/read/update/draft/add/toggle/approve response
+        // body is built here, so dropping the credentials once drops them from all three.
+        node.remove(CREDENTIAL_FIELDS);
         node.put(Constants.STATUS, status);
         if (createdOn != null) {
             node.put(Constants.CREATED_ON, createdOn.toInstant().toString());
