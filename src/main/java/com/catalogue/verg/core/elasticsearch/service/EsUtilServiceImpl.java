@@ -166,13 +166,14 @@ public class EsUtilServiceImpl implements ESUtilService {
         if (searchCriteria.getPageSize() != 0) {
             searchBuilder.size(searchCriteria.getPageSize());
         }
-        if (searchCriteria.getRequestedFields() != null) {
-            if (searchCriteria.getRequestedFields().isEmpty()) {
-                log.error("Please specify at least one field to include in the results.");
+        // Always filter: excludes win over includes, so no requestedFields can return a credential.
+        List<String> requestedFields = searchCriteria.getRequestedFields();
+        searchBuilder.source(s -> s.filter(f -> {
+            if (requestedFields != null && !requestedFields.isEmpty()) {
+                f.includes(requestedFields);
             }
-            List<String> fields = searchCriteria.getRequestedFields();
-            searchBuilder.source(s -> s.filter(f -> f.includes(fields)));
-        }
+            return f.excludes(Constants.CREDENTIAL_FIELDS);
+        }));
 
         addSort(searchCriteria, searchBuilder);
 

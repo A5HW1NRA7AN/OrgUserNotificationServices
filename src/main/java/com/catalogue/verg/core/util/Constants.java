@@ -1,5 +1,6 @@
 package com.catalogue.verg.core.util;
 
+import java.util.List;
 
 public class Constants{
 
@@ -89,8 +90,11 @@ public class Constants{
     public static final String DISPLAY_NAME = "displayName";
     public static final String PASSWORD = "password";
     public static final String PIN = "pin";
+    public static final List<String> CREDENTIAL_FIELDS = List.of(PASSWORD, PIN);
     // auth_service must accept the user before anything is persisted
     public static final String AUTH_USER_CREATE_FAILED = "auth_service rejected the user creation";
+    public static final String AUTH_USER_REVOKE_FAILED = "auth_service rejected the user revocation";
+    public static final String AUTH_USER_DELETE_FAILED = "auth_service rejected the user deletion";
 
     // Credential verification (/user/v1/verify)
     public static final String EMAIL_PASSWORD_REQUIRED = "Email and password are required";

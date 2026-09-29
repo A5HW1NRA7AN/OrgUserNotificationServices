@@ -151,7 +151,7 @@ curl -s -X POST http://localhost:8080/org/v1/create \
   }'
 ```
 
-Example — create a user (the `password` / `pin` must already be hashed by the caller; see [User credentials](#user-credentials)):
+Example — create a user (send `password` / `pin` as plaintext over TLS; the service hashes them, see [User credentials](#user-credentials)):
 
 ```bash
 curl -s -X POST http://localhost:8080/user/v1/create \
@@ -163,8 +163,8 @@ curl -s -X POST http://localhost:8080/user/v1/create \
     "phoneNumber": "+91-80-12345678",
     "orgId": "org-000000000001",
     "entityType": "FIELD_OFFICER",
-    "password": "<bcrypt-hash>",
-    "pin": "<hash>"
+    "password": "<plaintext-password>",
+    "pin": "482913"
   }'
 ```
 
@@ -172,11 +172,13 @@ curl -s -X POST http://localhost:8080/user/v1/create \
 
 The user catalogue is the source of truth for user credentials, under these rules:
 
-- `password` and `pin` are stored as **already-hashed** values — the caller (the onboarding portal's backend) hashes them server-side before submission. The service never hashes and never stores plaintext.
-- Credentials are **never indexed** in Elasticsearch, so they are never returned by `search`.
-- Authentication / IAM is handled by Keycloak; this catalogue owns only onboarding and credential storage. The generated `userId` is the identity surfaced into the JWT as a custom claim by the auth layer.
+- Callers send `password` and `pin` as **plaintext**. The service BCrypt-hashes them on every write path (`create`, `update`, `draft`, `add`); do not pre-hash, or the stored value is a hash of a hash and login fails.
+- The hashes live **only in PostgreSQL**. They are never indexed in Elasticsearch, never cached in Redis, and never returned by `read`, `search` or any write response.
+- On `update`, `password` and `pin` are optional: an omitted or blank value keeps the stored hash, a supplied value replaces it.
+- `POST /user/v1/verify` checks `{email, password}` against PostgreSQL and requires the record to be `ACTIVE`. It is called by the auth service and must not be exposed through the gateway.
+- Authentication / IAM is handled by Keycloak via the auth service. This catalogue keeps the auth identity in step with the record: `create` provisions it, toggling to `INACTIVE` revokes it, toggling back to `ACTIVE` restores it, and `delete` removes it. Each call is made before the local write, and a failure aborts the operation. The generated `userId` is the identity surfaced into the JWT by the auth layer.
 
-> **Note:** `read` and the `create` / `update` responses echo the full stored record, which includes the credential hashes. Restricting those responses is the responsibility of the API gateway (Kong RBAC) in front of the service.
+> **Upgrading an existing deployment:** earlier versions indexed the credential hashes. After deploying, run `POST /user/v1/loadFromPrimary` to rebuild the index without them, and flush the cached `user` entries in Redis.
 
 ## Project Structure
 

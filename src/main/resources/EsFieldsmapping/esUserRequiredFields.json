@@ -68,12 +68,6 @@
   "updatedBy": {
     "type": "keyword"
   },
-  "password": {
-    "type": "text"
-  },
-  "pin": {
-    "type": "text"
-  },
   "passwordExpiresOn": {
     "type": "date"
   },

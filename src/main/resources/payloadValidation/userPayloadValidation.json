@@ -48,11 +48,11 @@
     },
     "password": {
       "type": "string",
-      "description": "Hashed password (hashed by the portal backend before submission; source of truth)"
+      "description": "Plaintext password; BCrypt-hashed by the service before storage. Optional on update (omitted keeps the stored hash)"
     },
     "pin": {
       "type": "string",
-      "description": "Hashed PIN (hashed by the portal backend before submission; source of truth)"
+      "description": "Plaintext PIN; BCrypt-hashed by the service before storage. Optional on update (omitted keeps the stored hash)"
     },
     "location0Id": {
       "type": "string",

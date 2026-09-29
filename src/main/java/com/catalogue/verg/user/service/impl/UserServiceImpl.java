@@ -44,7 +44,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.sql.Timestamp;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -123,7 +122,7 @@ public class UserServiceImpl implements UserService {
         if (!lifecyclePolicy.isEnabledFor(AUDIT_ENTITY_NAME)) {
             // auth_service owns the identity: nothing is persisted here unless it accepts the user.
             // Kept outside the try below so a rejection is not re-wrapped as a generic 500.
-            ResponseEntity<Map<String, Object>> authResponse = authUserService.createAuthUser(
+            requireAuth(authUserService.createAuthUser(
                     textValue(userEntity, Constants.FIRST_NAME),
                     textValue(userEntity, Constants.LAST_NAME),
                     textValue(userEntity, Constants.EMAIL),
@@ -131,13 +130,7 @@ public class UserServiceImpl implements UserService {
                     textValue(userEntity, Constants.ORG_ID_RQST),
                     textValue(userEntity, Constants.FUNCTIONAL_ROLE),
                     textValue(userEntity, Constants.ORG_NAME),
-                    textValue(userEntity, Constants.DISPLAY_NAME));
-            if (authResponse == null || !authResponse.getStatusCode().is2xxSuccessful()) {
-                log.error("UserServiceImpl::createUser::auth_service returned a non-2xx status: {}",
-                        authResponse == null ? "no response" : authResponse.getStatusCode());
-                throw new CustomException(Constants.FAILED_CONST, Constants.AUTH_USER_CREATE_FAILED,
-                        HttpStatus.BAD_GATEWAY);
-            }
+                    textValue(userEntity, Constants.DISPLAY_NAME)), primaryID, Constants.AUTH_USER_CREATE_FAILED);
             log.info("UserServiceImpl::createUser::auth user created, proceeding to persist userId: {}", primaryID);
         } 
         // Hash the credentials before they reach postgres, ES or redis; raw values are not stored.
@@ -234,10 +227,10 @@ public class UserServiceImpl implements UserService {
         }
 
         try {
-            // 1. Does the email exist? Exact match against the indexed record.
-            JsonNode userDocument = findIndexedUserByEmail(email);
-            if (userDocument == null) {
-                log.warn("UserServiceImpl::verifyUser:no indexed user found for the given email");
+            // 1. Does the email exist? Postgres only: the password hash is never indexed.
+            UserEntity user = findUserByEmail(email);
+            if (user == null) {
+                log.warn("UserServiceImpl::verifyUser:no user found for the given email");
                 response.setResponseCode(HttpStatus.UNAUTHORIZED);
                 response.setMessage(Constants.INVALID_CREDENTIALS);
                 return response;
@@ -245,7 +238,7 @@ public class UserServiceImpl implements UserService {
 
             // 2. Does the plaintext password match the stored hash? BCrypt salts per call, so the
             // stored value can only be checked with matches() — never by re-hashing and comparing.
-            if (!HashUtil.matches(password, textValue(userDocument, Constants.PASSWORD))) {
+            if (!HashUtil.matches(password, textValue(user.getData(), Constants.PASSWORD))) {
                 log.warn("UserServiceImpl::verifyUser:password mismatch for the given email");
                 response.setResponseCode(HttpStatus.UNAUTHORIZED);
                 response.setMessage(Constants.INVALID_CREDENTIALS);
@@ -253,7 +246,7 @@ public class UserServiceImpl implements UserService {
             }
 
             // 3. Is the record live? DRAFT / PENDING / INACTIVE / DELETED must not verify.
-            String status = textValue(userDocument, Constants.STATUS);
+            String status = user.getStatus();
             if (!Constants.ACTIVE.equals(status)) {
                 log.warn("UserServiceImpl::verifyUser:user is {}, not ACTIVE", status);
                 response.setResponseCode(HttpStatus.FORBIDDEN);
@@ -262,8 +255,8 @@ public class UserServiceImpl implements UserService {
             }
 
             log.info("UserServiceImpl::verifyUser:credentials verified for userId: {}",
-                    textValue(userDocument, Constants.ID));
-            response.getResult().put(Constants.USER_ID_RQST, textValue(userDocument, Constants.ID));
+                    user.getUserId());
+            response.getResult().put(Constants.USER_ID_RQST, user.getUserId());
             response.getResult().put(Constants.EMAIL, email);
             response.getResult().put(Constants.STATUS, status);
             response.setMessage(Constants.SUCCESSFULLY_VERIFIED);
@@ -277,23 +270,45 @@ public class UserServiceImpl implements UserService {
     }
 
    
-    private JsonNode findIndexedUserByEmail(String email) throws Exception {
-        SearchCriteria searchCriteria = new SearchCriteria();
-        HashMap<String, Object> filterCriteriaMap = new HashMap<>();
-        filterCriteriaMap.put(Constants.EMAIL, email);
-        searchCriteria.setFilterCriteriaMap(filterCriteriaMap);
-        searchCriteria.setRequestedFields(
-                List.of(Constants.EMAIL, Constants.PASSWORD, Constants.STATUS));
-        searchCriteria.setPageNumber(0);
-        searchCriteria.setPageSize(1);
+    /** Aborts with a 502 unless auth_service accepted the call; nothing is persisted before it. */
+    private void requireAuth(ResponseEntity<Map<String, Object>> authResponse, String userId, String failure) {
+        if (authResponse == null || !authResponse.getStatusCode().is2xxSuccessful()) {
+            log.error("UserServiceImpl::requireAuth::auth_service returned a non-2xx status: {} for userId: {}",
+                    authResponse == null ? "no response" : authResponse.getStatusCode(), userId);
+            throw new CustomException(Constants.FAILED_CONST, failure, HttpStatus.BAD_GATEWAY);
+        }
+    }
 
-        SearchResult searchResult =
-                esUtilService.searchDocuments(Constants.USER_INDEX_NAME, searchCriteria);
-        JsonNode data = searchResult == null ? null : searchResult.getData();
-        if (data == null || !data.isArray() || data.size() == 0) {
+    /** Hashes supplied credentials and carries omitted ones forward from the stored record. */
+    private JsonNode mergeCredentials(JsonNode incoming, JsonNode stored) {
+        if (incoming == null || !incoming.isObject()) {
+            return incoming;
+        }
+        ObjectNode merged = ((ObjectNode) incoming).deepCopy();
+        for (String field : Constants.CREDENTIAL_FIELDS) {
+            String submitted = incoming.hasNonNull(field) ? incoming.get(field).asText() : null;
+            if (StringUtils.isNotBlank(submitted)) {
+                merged.put(field, HashUtil.encode(submitted));
+            } else if (stored != null && stored.hasNonNull(field)) {
+                merged.set(field, stored.get(field));
+            } else {
+                // Neither supplied nor stored: let validation refuse it.
+                merged.remove(field);
+            }
+        }
+        return merged;
+    }
+
+    /** The user for a login email, or null; oldest record wins until emails are unique. */
+    private UserEntity findUserByEmail(String email) {
+        List<UserEntity> matches = userRepository.findByEmail(email);
+        if (matches.isEmpty()) {
             return null;
         }
-        return data.get(0);
+        if (matches.size() > 1) {
+            log.warn("UserServiceImpl::findUserByEmail:{} records share this email", matches.size());
+        }
+        return matches.get(0);
     }
 
     @Override
@@ -371,10 +386,6 @@ public class UserServiceImpl implements UserService {
             return response;
         }
 
-        // Validate the incoming payload against the entity schema (same as create)
-        payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userEntity);
-        log.debug("UserServiceImpl::updateUser:validated the payload");
-
         try {
             // Check if the entity exists in the database
             Optional<UserEntity> entityOptional = userRepository.findById(id);
@@ -395,15 +406,20 @@ public class UserServiceImpl implements UserService {
                 return response;
             }
 
+            // Validated after the merge: omitted credentials carry forward from the stored record.
+            JsonNode userPayload = mergeCredentials(userEntity, userEntity1.getData());
+            payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userPayload);
+            log.debug("UserServiceImpl::updateUser:validated the payload");
+
             // Replace payload; preserve id / createdOn / status, bump updatedOn
             Timestamp currentTime = new Timestamp(System.currentTimeMillis());
-            userEntity1.setData(userEntity);
+            userEntity1.setData(userPayload);
             userEntity1.setUpdatedOn(currentTime);
             userRepository.save(userEntity1);
             log.info("UserServiceImpl::updateUser:updated record in postgres for id: {}", id);
 
             // Re-index the document in Elasticsearch (filtered to whitelisted fields)
-            ObjectNode jsonNode = buildDocument(userEntity, userEntity1.getStatus(),
+            ObjectNode jsonNode = buildDocument(userPayload, userEntity1.getStatus(),
                     userEntity1.getCreatedOn(), currentTime);
             Map<String, Object> map = objectMapper.convertValue(jsonNode, Map.class);
             esUtilService.updateDocument(Constants.USER_INDEX_NAME, Constants.INDEX_TYPE,
@@ -420,6 +436,9 @@ public class UserServiceImpl implements UserService {
             response.setResponseCode(HttpStatus.OK);
             return response;
 
+        } catch (CustomException e) {
+            // Keep the validation 400 rather than re-wrapping it as a 500.
+            throw e;
         } catch (Exception e) {
             log.error("UserServiceImpl::updateUser:error while updating record for id: {}", id, e);
             throw new CustomException("error while processing", e.getMessage(),
@@ -460,6 +479,9 @@ public class UserServiceImpl implements UserService {
                 return response;
             }
 
+            // Auth first: once soft-deleted, a retry would never reach auth_service again.
+            requireAuth(authUserService.deleteAuthUser(id), id, Constants.AUTH_USER_DELETE_FAILED);
+
             // Soft delete: mark the status DELETED and set updatedOn timestamp
             userEntity.setStatus(Constants.DELETED);
             userEntity.setUpdatedOn(new Timestamp(System.currentTimeMillis()));
@@ -481,6 +503,9 @@ public class UserServiceImpl implements UserService {
             //         userEntity.getCreatedOn(), userEntity.getUpdatedOn());
             return response;
 
+        } catch (CustomException e) {
+            // Keep the auth 502 rather than re-wrapping it as a 500.
+            throw e;
         } catch (Exception e) {
             log.error("UserServiceImpl::delete:error while deleting record for id: {}", id, e);
             throw new CustomException(Constants.ERROR, "error while deleting record",
@@ -529,12 +554,13 @@ public class UserServiceImpl implements UserService {
             userEntity1.setCreatedOn(currentTime);
             userEntity1.setUpdatedOn(currentTime);
             userEntity1.setStatus(Constants.DRAFT);
-            userEntity1.setData(userEntity);
+            JsonNode userPayload = HashUtil.hashSecrets(userEntity, Constants.PASSWORD, Constants.PIN);
+            userEntity1.setData(userPayload);
 
             userRepository.save(userEntity1);
             log.info("UserServiceImpl::draftUser::persisted draft in postgres");
 
-            ObjectNode jsonNode = buildDocument(userEntity, Constants.DRAFT, currentTime, currentTime);
+            ObjectNode jsonNode = buildDocument(userPayload, Constants.DRAFT, currentTime, currentTime);
             Map<String, Object> map = objectMapper.convertValue(jsonNode, Map.class);
             esUtilService.addDocument(Constants.USER_INDEX_NAME, Constants.INDEX_TYPE,
                     String.valueOf(primaryID), map, vergProperties.getElasticUserJsonPath());
@@ -585,13 +611,14 @@ public class UserServiceImpl implements UserService {
             }
             Timestamp currentTime = new Timestamp(System.currentTimeMillis());
             JsonNode auditBefore = userEntity1.getData();
-            userEntity1.setData(userEntity);
+            JsonNode userPayload = HashUtil.hashSecrets(userEntity, Constants.PASSWORD, Constants.PIN);
+            userEntity1.setData(userPayload);
             userEntity1.setStatus(Constants.PENDING);
             userEntity1.setUpdatedOn(currentTime);
             userRepository.save(userEntity1);
             log.info("UserServiceImpl::addUser:submitted record {} for approval (PENDING)", id);
 
-            ObjectNode jsonNode = buildDocument(userEntity, Constants.PENDING,
+            ObjectNode jsonNode = buildDocument(userPayload, Constants.PENDING,
                     userEntity1.getCreatedOn(), currentTime);
             Map<String, Object> map = objectMapper.convertValue(jsonNode, Map.class);
             esUtilService.updateDocument(Constants.USER_INDEX_NAME, Constants.INDEX_TYPE,
@@ -656,6 +683,22 @@ public class UserServiceImpl implements UserService {
                 response.setMessage(Constants.INVALID_STATUS_TRANSITION);
                 return response;
             }
+            // Auth first, both ways: revoke on deactivation, auth_user_create re-enables.
+            JsonNode data = userEntity1.getData();
+            boolean deactivating = Constants.IN_ACTIVE.equals(newStatus);
+            requireAuth(deactivating
+                            ? authUserService.revokeAuthUser(id)
+                            : authUserService.createAuthUser(
+                                    textValue(data, Constants.FIRST_NAME),
+                                    textValue(data, Constants.LAST_NAME),
+                                    textValue(data, Constants.EMAIL),
+                                    id,
+                                    textValue(data, Constants.ORG_ID_RQST),
+                                    textValue(data, Constants.FUNCTIONAL_ROLE),
+                                    textValue(data, Constants.ORG_NAME),
+                                    textValue(data, Constants.DISPLAY_NAME)),
+                    id, deactivating ? Constants.AUTH_USER_REVOKE_FAILED : Constants.AUTH_USER_CREATE_FAILED);
+
             Timestamp currentTime = new Timestamp(System.currentTimeMillis());
             userEntity1.setStatus(newStatus);
             userEntity1.setUpdatedOn(currentTime);
@@ -676,6 +719,9 @@ public class UserServiceImpl implements UserService {
             //         userEntity1.getData(), userEntity1.getData(),
             //         userEntity1.getCreatedOn(), userEntity1.getUpdatedOn());
             return response;
+        } catch (CustomException e) {
+            // Keep the auth 502 rather than re-wrapping it as a 500.
+            throw e;
         } catch (Exception e) {
             throw new CustomException("error while processing", e.getMessage(),
                     HttpStatus.INTERNAL_SERVER_ERROR);
@@ -765,6 +811,8 @@ public class UserServiceImpl implements UserService {
         if (data != null && data.isObject()) {
             node.setAll((ObjectNode) data);
         }
+        // Credentials stay in postgres: this projection feeds ES, redis and every response.
+        node.remove(Constants.CREDENTIAL_FIELDS);
         node.put(Constants.STATUS, status);
         if (createdOn != null) {
             node.put(Constants.CREATED_ON, createdOn.toInstant().toString());
