@@ -94,10 +94,7 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private AuthUserService authUserService;
 
-    /**
-     * Catalogue name recorded on every audit row emitted by this service. Doubles as the key
-     * this catalogue is looked up by in the lifecycle switches ({@link LifecyclePolicy}).
-     */
+    /** Catalogue name on every audit row; also its key in the lifecycle switches. */
     private static final String AUDIT_ENTITY_NAME = "user";
 
     private Logger logger = LoggerFactory.getLogger(UserServiceImpl.class);
@@ -116,12 +113,9 @@ public class UserServiceImpl implements UserService {
         // Generate Primary Key up front: auth_service is told the userId this catalogue will use.
         String primaryID = primaryKeyUtil.generateKey(Constants.USER_VALIDATION_FILE_JSON);
 
-        // The auth identity is only created when the record goes live on create, i.e. when the
-        // lifecycle is off for this catalogue (catalogue.lifecycle.entities.user=false). With the
-        // lifecycle on, the record starts PENDING and has no business existing in auth_service yet.
+        // Only a record that goes live on create (lifecycle off) gets an auth identity here.
         if (!lifecyclePolicy.isEnabledFor(AUDIT_ENTITY_NAME)) {
-            // auth_service owns the identity: nothing is persisted here unless it accepts the user.
-            // Kept outside the try below so a rejection is not re-wrapped as a generic 500.
+            // Nothing is persisted unless auth_service accepts; outside the try so it is not a 500.
             requireAuth(authUserService.createAuthUser(
                     textValue(userEntity, Constants.FIRST_NAME),
                     textValue(userEntity, Constants.LAST_NAME),
@@ -236,8 +230,7 @@ public class UserServiceImpl implements UserService {
                 return response;
             }
 
-            // 2. Does the plaintext password match the stored hash? BCrypt salts per call, so the
-            // stored value can only be checked with matches() — never by re-hashing and comparing.
+            // 2. Does the password match? BCrypt salts per hash, so only matches() can check it.
             if (!HashUtil.matches(password, textValue(user.getData(), Constants.PASSWORD))) {
                 log.warn("UserServiceImpl::verifyUser:password mismatch for the given email");
                 response.setResponseCode(HttpStatus.UNAUTHORIZED);
@@ -728,10 +721,7 @@ public class UserServiceImpl implements UserService {
         }
     }
 
-    /**
-     * Shared status-transition logic for approve/review. Validates the id and requested target status,
-     * enforces the required current status, then persists the new status to Postgres, ES and Redis.
-     */
+    /** Shared approve/review transition: checks target and current status, then persists everywhere. */
     private CustomResponse transitionStatus(LifecycleRequest request, String operation,
                                             String requiredCurrentStatus, Set<String> allowedTargets) {
         CustomResponse response = new CustomResponse();
@@ -791,9 +781,7 @@ public class UserServiceImpl implements UserService {
         }
     }
 
-    /**
-     * Null-safe read of a string field off the request payload.
-     */
+    /** Null-safe read of a string field off the request payload. */
     private String textValue(JsonNode payload, String field) {
         if (payload == null || !payload.hasNonNull(field)) {
             return null;
@@ -801,11 +789,7 @@ public class UserServiceImpl implements UserService {
         return payload.get(field).asText();
     }
 
-    /**
-     * Builds the projection stored in Elasticsearch and Redis (and returned by read): the payload
-     * plus the lifecycle status and the Postgres createdOn/updatedOn timestamps (ISO-8601). ES keeps
-     * only whitelisted keys, so status/createdOn/updatedOn must be present in esUserRequiredFields.json.
-     */
+    /** ES/redis/read projection: payload + status + ISO timestamps (whitelisted in esUserRequiredFields.json). */
     private ObjectNode buildDocument(JsonNode data, String status, Timestamp createdOn, Timestamp updatedOn) {
         ObjectNode node = objectMapper.createObjectNode();
         if (data != null && data.isObject()) {

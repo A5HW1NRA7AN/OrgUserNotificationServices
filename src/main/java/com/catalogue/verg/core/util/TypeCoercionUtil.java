@@ -16,13 +16,7 @@ import java.io.InputStream;
 import java.util.Iterator;
 import java.util.Map;
 
-/**
- * Converts a Map<String, String> (from CSV/XLSX parsing) into a properly-typed
- * JsonNode based on the types declared in the payload validation JSON schema.
- *
- * For example, if the schema declares "Number": { "type": "integer" },
- * the string value "42" is converted to an IntNode(42) instead of a TextNode("42").
- */
+/** Coerces CSV/XLSX string values to the JSON types their schema declares (e.g. "42" -> 42). */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -30,13 +24,7 @@ public class TypeCoercionUtil {
 
     private final ObjectMapper objectMapper;
 
-    /**
-     * Converts a row of string values into a typed ObjectNode based on the JSON schema.
-     *
-     * @param validationFileName the classpath resource path to the validation schema
-     * @param rowData            a map of column-header → string-value from CSV/XLSX
-     * @return a properly-typed ObjectNode ready for JSON schema validation
-     */
+    /** Typed ObjectNode for one CSV/XLSX row, per the validation schema. */
     public ObjectNode coerceRow(String validationFileName, Map<String, String> rowData) {
         ObjectNode result = objectMapper.createObjectNode();
         JsonNode schemaProperties = loadSchemaProperties(validationFileName);
@@ -57,9 +45,7 @@ public class TypeCoercionUtil {
         return result;
     }
 
-    /**
-     * Loads the "properties" section from a JSON schema file.
-     */
+    /** Loads the "properties" section from a JSON schema file. */
     private JsonNode loadSchemaProperties(String fileName) {
         try {
             InputStream schemaStream = getClass().getResourceAsStream(fileName);
@@ -76,10 +62,7 @@ public class TypeCoercionUtil {
         }
     }
 
-    /**
-     * Looks up the declared "type" for a given property name in the schema.
-     * Returns "string" as the default if the property or type is not found.
-     */
+    /** The declared type of a property, defaulting to "string". */
     private String getSchemaType(JsonNode schemaProperties, String propertyName) {
         if (schemaProperties == null || !schemaProperties.has(propertyName)) {
             return "string";
@@ -91,9 +74,7 @@ public class TypeCoercionUtil {
         return "string";
     }
 
-    /**
-     * Converts a string value to the appropriate JsonNode type based on the schema type declaration.
-     */
+    /** Converts a string value to the JsonNode type the schema declares. */
     private JsonNode convertValue(String value, String declaredType) {
         try {
             switch (declaredType) {

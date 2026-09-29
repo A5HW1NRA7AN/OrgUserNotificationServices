@@ -17,20 +17,7 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
-/**
- * Generic service that rebuilds an entity's Elasticsearch index from the primary store (Postgres).
- * <p>
- * Each entity's ServiceImpl delegates to this service, passing its index name, ES field-whitelist
- * path, the full list of Postgres records, and functions describing how to extract each record's id,
- * build its ES document projection, and decide whether it should be indexed.
- * <p>
- * The whole index is dropped first, then every record satisfying {@code shouldIndex} is re-added.
- * Elasticsearch auto-recreates the index (dynamic mapping) on the first document insert, mirroring how
- * the index is created during normal create operations. Supports partial-success: per-record failures
- * are collected and reported without aborting the run.
- *
- * @see ImportService for the analogous per-entity delegation pattern.
- */
+/** Rebuilds an ES index from postgres: drop, then re-add each indexable record; failures are reported. */
 @Slf4j
 @Service
 public class LoadFromPrimaryService {
@@ -38,18 +25,7 @@ public class LoadFromPrimaryService {
     @Autowired
     private ESUtilService esUtilService;
 
-    /**
-     * Drops {@code indexName} and loads every record from the primary store for which
-     * {@code shouldIndex} is true.
-     *
-     * @param indexName       the Elasticsearch index to rebuild
-     * @param jsonPath        classpath path to the entity's ES required-fields whitelist JSON
-     * @param records         all Postgres records for the entity (e.g. repository.findAll())
-     * @param idExtractor     maps a record to its Elasticsearch document id
-     * @param documentBuilder maps a record to its Elasticsearch document (the ES/Redis projection)
-     * @param shouldIndex     records failing this predicate are skipped (e.g. DELETED soft-deletes)
-     * @param <T>             the entity type
-     */
+    /** Drops indexName and re-adds every record passing shouldIndex (e.g. skipping DELETED). */
     public <T> CustomResponse loadFromPrimary(
             String indexName,
             String jsonPath,

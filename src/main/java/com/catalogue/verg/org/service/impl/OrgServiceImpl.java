@@ -87,10 +87,7 @@ public class OrgServiceImpl implements OrgService {
     @Autowired
     private LifecyclePolicy lifecyclePolicy;
 
-    /**
-     * Catalogue name recorded on every audit row emitted by this service. Doubles as the key
-     * this catalogue is looked up by in the lifecycle switches ({@link LifecyclePolicy}).
-     */
+    /** Catalogue name on every audit row; also its key in the lifecycle switches. */
     private static final String AUDIT_ENTITY_NAME = "org";
 
     private Logger logger = LoggerFactory.getLogger(OrgServiceImpl.class);
@@ -569,10 +566,7 @@ public class OrgServiceImpl implements OrgService {
         }
     }
 
-    /**
-     * Shared status-transition logic for approve/review. Validates the id and requested target status,
-     * enforces the required current status, then persists the new status to Postgres, ES and Redis.
-     */
+    /** Shared approve/review transition: checks target and current status, then persists everywhere. */
     private CustomResponse transitionStatus(LifecycleRequest request, String operation,
                                             String requiredCurrentStatus, Set<String> allowedTargets) {
         CustomResponse response = new CustomResponse();
@@ -632,11 +626,7 @@ public class OrgServiceImpl implements OrgService {
         }
     }
 
-    /**
-     * Builds the projection stored in Elasticsearch and Redis (and returned by read): the payload
-     * plus the lifecycle status and the Postgres createdOn/updatedOn timestamps (ISO-8601). ES keeps
-     * only whitelisted keys, so status/createdOn/updatedOn must be present in esOrgRequiredFields.json.
-     */
+    /** ES/redis/read projection: payload + status + ISO timestamps (whitelisted in esOrgRequiredFields.json). */
     private ObjectNode buildDocument(JsonNode data, String status, Timestamp createdOn, Timestamp updatedOn) {
         ObjectNode node = objectMapper.createObjectNode();
         if (data != null && data.isObject()) {

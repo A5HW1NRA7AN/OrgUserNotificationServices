@@ -16,9 +16,7 @@ public class Constants{
     public static final String ERROR = "ERROR";
     public static final String REDIS_KEY_PREFIX = "verg_cache_";
 
-    // Lifecycle / approval workflow constants
-    // Note: ACTIVE (published/live) is reused; IN_ACTIVE now means deactivated (toggle);
-    // DELETED (below) is the soft-delete state set by delete().
+    // Lifecycle statuses: ACTIVE = live, IN_ACTIVE = toggled off, DELETED (below) = soft-deleted.
     public static final String DRAFT = "DRAFT";
     public static final String PENDING = "PENDING";
     public static final String APPROVED = "APPROVED";

@@ -2,14 +2,7 @@ package com.catalogue.verg.core.util;
 
 import java.util.Set;
 
-/**
- * Central definition of the editorial-lifecycle state machine, kept in one place so the same
- * rules can be reused when the lifecycle is rolled out to the other registry entities.
- *
- * <p>Statuses live on the entity's {@code status} column. {@code ACTIVE} = published/live
- * (only {@code review} can set it), {@code INACTIVE} = deactivated (set by the toggle endpoint),
- * {@code DELETED} = soft-deleted (set by {@code delete}).
- */
+/** The lifecycle state machine shared by every catalogue; ACTIVE is set only by review. */
 public final class LifecycleUtil {
 
     private LifecycleUtil() {
@@ -28,10 +21,7 @@ public final class LifecycleUtil {
     public static final Set<String> REVIEW_TARGETS =
             Set.of(Constants.ACTIVE, Constants.REJECTED, Constants.REWORK, Constants.PENDING);
 
-    /**
-     * Normalises a requested target status: {@code PUBLISHED} is accepted as a friendly alias for
-     * the terminal live state {@code ACTIVE}. All other values are returned untouched (null-safe).
-     */
+    /** Maps the alias PUBLISHED to ACTIVE; any other value (or null) is returned as is. */
     public static String normalizeTarget(String status) {
         if (status == null) {
             return null;

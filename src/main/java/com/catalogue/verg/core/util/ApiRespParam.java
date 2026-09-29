@@ -1,9 +1,6 @@
 package com.catalogue.verg.core.util;
 
-/**
- * @author Mahesh RV
- * @author Ruksana
- */
+/** @author Mahesh RV, Ruksana */
 public class ApiRespParam {
     private String resMsgId;
     private String msgId;

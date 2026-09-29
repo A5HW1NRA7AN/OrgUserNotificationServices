@@ -26,12 +26,7 @@ public class OutboundRequestHandlerServiceImpl {
     @Autowired
     private RestTemplate restTemplate;
 
-    /**
-     * @param uri
-     * @param request
-     * @return
-     * @throws Exception
-     */
+    /** POSTs request to uri; returns the body, the error body on a 4xx, or null. */
     public Object fetchResultUsingPost(String uri, Object request) {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
@@ -71,11 +66,7 @@ public class OutboundRequestHandlerServiceImpl {
         return response;
     }
 
-    /**
-     * @param uri
-     * @return
-     * @throws Exception
-     */
+    /** GETs uri; returns the body, the error body on a 4xx, or null. */
     public Object fetchResult(String uri) {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
@@ -106,11 +97,7 @@ public class OutboundRequestHandlerServiceImpl {
         return response;
     }
 
-    /**
-     * @param uri
-     * @return
-     * @throws Exception
-     */
+    /** GETs uri with the given headers; returns the body, or null on failure. */
     public Object fetchUsingGetWithHeaders(String uri, Map<String, String> headersValues) {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);

@@ -22,15 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
-/**
- * Generic service that handles bulk import of CSV/XLSX files for any catalogue entity.
- * <p>
- * Each entity's ServiceImpl delegates to this service, passing its validation file path
- * and its existing create method as a Function reference.
- * <p>
- * Supports partial-success: valid rows are persisted, invalid rows are reported with errors.
- * Enforces a 5MB maximum file size.
- */
+/** Bulk CSV/XLSX import for any catalogue: valid rows persist, invalid ones are reported (5MB max). */
 @Slf4j
 @Service
 public class ImportService {
@@ -49,14 +41,7 @@ public class ImportService {
     @Autowired
     private ObjectMapper objectMapper;
 
-    /**
-     * Processes a bulk import file (CSV or XLSX).
-     *
-     * @param file             the uploaded multipart file
-     * @param validationFile   classpath path to the payload validation JSON schema
-     * @param createFunction   reference to the entity's existing create method
-     * @return a CustomResponse containing an ImportResult with per-row outcomes
-     */
+    /** Imports each row through the entity's own create method and returns per-row outcomes. */
     public CustomResponse processBulkImport(
             MultipartFile file,
             String validationFile,

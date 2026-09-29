@@ -7,10 +7,7 @@ import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 
-/**
- * @author Mahesh RV
- * @author Ruksana
- */
+/** @author Mahesh RV, Ruksana */
 public class ApiResponse {
     private String id;
     private String ver;

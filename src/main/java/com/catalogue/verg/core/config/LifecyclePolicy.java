@@ -13,30 +13,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Single authority for whether the editorial lifecycle (draft -> add -> approve -> review)
- * applies to a given catalogue.
- *
- * <p>Two switches, combined with AND:
- * <ul>
- *   <li>{@code catalogue.lifecycle.enabled} — service-wide master switch;</li>
- *   <li>{@code catalogue.lifecycle.entities.<name>} — per-catalogue override, keyed by the
- *       catalogue's URL segment. An absent key means enabled.</li>
- * </ul>
- *
- * <p>When the lifecycle is disabled for a catalogue, its lifecycle endpoints 404 and
- * {@code create} persists {@link Constants#ACTIVE} instead of {@link Constants#PENDING}.
- * CRUD, search, read, import and loadFromPrimary are unaffected.
- *
- * <p>Configuration only seeds {@link #live} at startup; {@link #live} is what is actually
- * read, so a future admin endpoint can flip a catalogue at runtime via
- * {@link #setEnabledFor(String, boolean)} without a restart.
- *
- * <p>Note: no class-level Lombok {@code @Getter}/{@code @Setter} here on purpose — it would
- * expose {@link #live} as a phantom {@code catalogue.lifecycle.live.*} binding target.
- * Likewise the class must keep its default constructor, or Spring switches to constructor
- * binding and the field defaults stop applying.
- */
+/** Whether the lifecycle applies to a catalogue: the global switch AND its override (absent = on). */
+// No class-level @Getter/@Setter (would bind `live`), and keep the default constructor (field defaults).
 @Component
 @ConfigurationProperties(prefix = "catalogue.lifecycle")
 @Slf4j
@@ -78,19 +56,12 @@ public class LifecyclePolicy {
         return enabled && live.getOrDefault(normalize(catalogue), Boolean.TRUE);
     }
 
-    /**
-     * Status a freshly created record should carry: PENDING when the lifecycle runs for this
-     * catalogue (it still has to be approved and reviewed), ACTIVE when it does not.
-     */
+    /** PENDING when the lifecycle runs for this catalogue, ACTIVE when it does not. */
     public String initialStatus(String catalogue) {
         return isEnabledFor(catalogue) ? Constants.PENDING : Constants.ACTIVE;
     }
 
-    /**
-     * Guard for lifecycle-only endpoints. Throws a 404 CustomException — which
-     * RestExceptionHandling renders as the service's standard ErrorResponse — when the
-     * lifecycle is disabled for this catalogue.
-     */
+    /** 404s a lifecycle-only endpoint when the lifecycle is off for this catalogue. */
     public void requireEnabled(String catalogue) {
         if (!isEnabledFor(catalogue)) {
             log.debug("LifecyclePolicy::requireEnabled:lifecycle is disabled for catalogue: {}", catalogue);
@@ -99,21 +70,13 @@ public class LifecyclePolicy {
         }
     }
 
-    /**
-     * Flips a catalogue at runtime. Hook for the admin toggle endpoint; the change is
-     * in-memory only, so it resets to configuration on restart and applies to this instance
-     * alone.
-     */
+    /** Flips a catalogue at runtime; in-memory and per instance, so a restart resets it. */
     public void setEnabledFor(String catalogue, boolean lifecycleEnabled) {
         live.put(normalize(catalogue), lifecycleEnabled);
         log.info("LifecyclePolicy::setEnabledFor:{}={}", normalize(catalogue), lifecycleEnabled);
     }
 
-    /**
-     * Canonicalises a catalogue name so configuration keys and lookups agree regardless of
-     * case or separators ({@code cropCategory}, {@code crop-category} and {@code cropcategory}
-     * all resolve to the same key, matching main.py's {@code service_name_lower}).
-     */
+    /** Canonical key, ignoring case and separators, matching main.py's service_name_lower. */
     private static String normalize(String catalogue) {
         return catalogue == null
                 ? ""

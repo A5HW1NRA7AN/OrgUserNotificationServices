@@ -28,8 +28,7 @@ public interface UserService {
     // Toggle a live record between ACTIVE and INACTIVE (rejects any other status)
     CustomResponse toggleStatus(String id);
 
-    // Verifies {email, password} against the indexed record: email must exist, the password must
-    // match the stored BCrypt hash, and the record must be ACTIVE
+    // Verifies {email, password}: registered email, matching BCrypt hash, ACTIVE record
     CustomResponse verifyUser(JsonNode verifyRequest);
 
     CustomResponse searchUser(SearchCriteria searchCriteria);

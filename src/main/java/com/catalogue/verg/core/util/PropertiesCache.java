@@ -8,12 +8,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
 
-/**
- * <p>
- * A utility class to cache and retrieve properties.
- * It loads properties from specified files and provides methods to access them.
- * Also handles environment variable overrides for properties.
- */
+/** Loads and caches properties from files, with environment variable overrides. */
 public class PropertiesCache {
     // Logger for logging messages
     private final Logger logger = LogManager.getLogger(getClass());
@@ -26,9 +21,7 @@ public class PropertiesCache {
     // Properties object to store loaded properties
     private final Properties configProp = new Properties();
 
-    /**
-     * Private constructor to prevent instantiation from outside
-     */
+    /** Private constructor to prevent instantiation from outside. */
     private PropertiesCache() {
         // Load properties from each file
         for (String file : fileName) {
@@ -40,11 +33,7 @@ public class PropertiesCache {
         }
     }
 
-    /**
-     * Method to get singleton instance of PropertiesCache
-     *
-     * @return - returns the instance of PropertiesCache
-     */
+    /** The singleton instance of PropertiesCache. */
     public static PropertiesCache getInstance() {
 
         // change the lazy holder implementation to simple singleton implementation ...
@@ -55,24 +44,14 @@ public class PropertiesCache {
         static final PropertiesCache propertiesCache = new PropertiesCache();
     }
 
-    /**
-     * Method to get a property value
-     *
-     * @param key -key to be fetched.
-     * @return - returns the values.
-     */
+    /** A property value: env var first, then the files, else the key itself. */
     public String getProperty(String key) {
         String value = System.getenv(key);
         if (StringUtils.isNotBlank(value)) return value;
         return configProp.getProperty(key) != null ? configProp.getProperty(key) : key;
     }
 
-    /**
-     * Method to read a property value
-     *
-     * @param key - key to be read
-     * @return - returns the value.
-     */
+    /** A property value: env var first, then the files, else null. */
     public String readProperty(String key) {
         String value = System.getenv(key);
         if (StringUtils.isNotBlank(value)) return value;

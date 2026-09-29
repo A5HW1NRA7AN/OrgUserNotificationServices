@@ -38,19 +38,11 @@ public class AuthUserService {
     @Autowired
     private RestTemplate restTemplate;
 
-    /**
-     * POSTs the given user details to {@code {auth.service.url}/auth/v1/auth_user_create}.
-     * <p>
-     * The full {@link ResponseEntity} is returned so callers can gate on the status code before
-     * continuing. A 4xx/5xx from auth_service surfaces as {@code HttpClientErrorException} /
-     * {@code HttpServerErrorException}, and an unreachable auth_service as
-     * {@code ResourceAccessException} — none of them are swallowed here.
-     */
+    /** Publishes the user via auth_user_create; callers gate on the returned status. */
     public ResponseEntity<Map<String, Object>> createAuthUser(String firstName, String lastName, String email,
                                                               String userId, String orgId, String functionalRole,
                                                               String orgName, String displayName) {
-        // Keys are auth_service's request contract, not this catalogue's schema — they happen to
-        // coincide. functionalRole and email are required there; the rest carry forward when absent.
+        // auth_service's request contract; functionalRole and email are required there.
         Map<String, Object> request = new HashMap<>();
         request.put("firstName", firstName);
         request.put("lastName", lastName);

@@ -39,11 +39,7 @@ public class PayloadValidation {
         }
     }
 
-    /**
-     * Validates a payload against the entity schema but with the top-level {@code required} array
-     * removed, so incomplete records are accepted (used by the {@code draft} endpoint). Type and
-     * structural constraints are still enforced.
-     */
+    /** Validates types and structure but not the required list, so drafts may be incomplete. */
     public void validatePayloadRelaxed(String fileName, JsonNode payload) {
         try {
             JsonSchemaFactory schemaFactory = JsonSchemaFactory.getInstance();

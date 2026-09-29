@@ -38,8 +38,7 @@ public class CatalogueController {
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
-    // Creates a new record (full validation). With the lifecycle on it lands PENDING and has
-    // to be approved then reviewed; with the lifecycle off it lands ACTIVE straight away.
+    // Creates a record (full validation): PENDING with the lifecycle on, ACTIVE with it off.
     @PostMapping("/v1/add")
     public ResponseEntity<CustomResponse> add(@RequestBody JsonNode catalogueDetails) {
         CustomResponse response = catalogueService.createCatalogue(catalogueDetails);
@@ -70,9 +69,7 @@ public class CatalogueController {
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
-    // Toggle a live record between ACTIVE and INACTIVE (rejects any other status).
-    // Deliberately NOT gated: plain activate/deactivate, not part of the approval chain, and
-    // with the lifecycle off it is the only way to take a record offline short of deleting it.
+    // ACTIVE <-> INACTIVE only; not lifecycle-gated, as with it off this is the only way offline.
     @PutMapping("/v1/toggle/{id}")
     public ResponseEntity<CustomResponse> toggle(@PathVariable String id) {
         CustomResponse response = catalogueService.toggleStatus(id);

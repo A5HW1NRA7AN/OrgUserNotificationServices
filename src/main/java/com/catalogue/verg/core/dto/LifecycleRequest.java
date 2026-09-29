@@ -5,10 +5,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/**
- * Request body for the lifecycle status-transition endpoints (approve / review).
- * Carries the target record id and the requested target status.
- */
+/** Body for approve/review: the record id and the requested target status. */
 @Getter
 @Setter
 @NoArgsConstructor

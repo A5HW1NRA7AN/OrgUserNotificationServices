@@ -136,10 +136,7 @@ public class NotificationTemplateService {
             return response;
         }
 
-        /*
-         * Check whether the requested template code
-         * belongs to another active template.
-         */
+        // Is the requested template code held by another active template?
         boolean exists =
                 repository.existsByTemplateCodeAndIsDeletedFalse(
                         request.getTemplateCode()
@@ -428,9 +425,7 @@ public class NotificationTemplateService {
         String module = request.getModule();
         String receiver = request.getReceiver();
 
-        /*
-         * No filters
-         */
+        // No filters
         if ((search == null || search.trim().isEmpty())
                 && (status == null || status.equalsIgnoreCase("All"))
                 && (module == null || module.equalsIgnoreCase("All"))
@@ -441,9 +436,7 @@ public class NotificationTemplateService {
 
         } else {
 
-            /*
-             * Apply filters
-             */
+            // Apply filters
             templatePage =
                     repository.searchTemplatesAdmin(
                             search != null ? search.trim() : "",

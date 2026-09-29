@@ -53,9 +53,7 @@ public class EsUtilServiceImpl implements ESUtilService {
         this.esConfig = esConfig;
     }
 
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
+    // --- Public API ---
 
     @Override
     public Result addDocument(String esIndexName, String type, String id,
@@ -244,9 +242,7 @@ public class EsUtilServiceImpl implements ESUtilService {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Query building
-    // -------------------------------------------------------------------------
+    // --- Query building ---
 
     private Query buildQuery(SearchCriteria searchCriteria) {
         BoolQuery.Builder boolBuilder = buildFilterQuery(searchCriteria.getFilterCriteriaMap());
@@ -409,9 +405,7 @@ public class EsUtilServiceImpl implements ESUtilService {
         return builder;
     }
 
-    // -------------------------------------------------------------------------
-    // Aggregations / facets
-    // -------------------------------------------------------------------------
+    // --- Aggregations / facets ---
 
     private Map<String, Aggregation> buildAggregations(List<String> facets) {
         if (facets == null) return Collections.emptyMap();
@@ -436,9 +430,7 @@ public class EsUtilServiceImpl implements ESUtilService {
         return result;
     }
 
-    // -------------------------------------------------------------------------
-    // Utilities
-    // -------------------------------------------------------------------------
+    // --- Utilities ---
 
     private Map<String, Object> loadSchema(String jsonFilePath) throws IOException {
         JsonSchemaFactory schemaFactory = JsonSchemaFactory.getInstance();
