@@ -172,10 +172,14 @@ curl -s -X POST http://localhost:8080/user/v1/create \
 
 The user catalogue is the source of truth for user credentials, under these rules:
 
-- Callers send `password` and `pin` as **plaintext**. The service BCrypt-hashes them on every write path (`create`, `update`, `draft`, `add`); do not pre-hash, or the stored value is a hash of a hash and login fails.
+- Callers send `password` and `pin` as plaintext or as an existing BCrypt hash. The service hashes plaintext on every write path (`create`, `update`, `draft`, `add`) and stores a hash as sent, so a pre-hashed value is never hashed twice.
+- A plaintext `pin` must be exactly 6 digits; a pre-hashed `pin` is the sender's responsibility.
 - The hashes live **only in PostgreSQL**. They are never indexed in Elasticsearch, never cached in Redis, and never returned by `read`, `search` or any write response.
 - On `update`, `password` and `pin` are optional: an omitted or blank value keeps the stored hash, a supplied value replaces it.
-- `POST /user/v1/verify` checks `{email, password}` against PostgreSQL and requires the record to be `ACTIVE`. It is called by the auth service and must not be exposed through the gateway.
+- `POST /user/v1/verify` checks `{email, password}`, and `POST /user/v1/verify_pin` checks `{userId, pin}`, against PostgreSQL; both require the record to be `ACTIVE`. They are called by the auth service and must not be exposed through the gateway.
+- `passwordExpiresOn` and `pinExpiresOn` are optional ISO-8601 dates set by the caller. Once a date has passed, the right credential gets `403 "Password has expired"` / `"PIN has expired"` (a wrong one still gets `401`). A blank or unparseable date never expires.
+- `PUT /user/v1/update/{id}/pin` `{currentPassword, newPin, pinExpiresOn?}` changes the PIN, authorised by the current password. The new PIN gets the given expiry, or none.
+- `update` also syncs the profile to the auth service (`auth_user_update`) for `ACTIVE` and `INACTIVE` records. This is best-effort: a failure is logged and the update still succeeds.
 - Authentication / IAM is handled by Keycloak via the auth service. This catalogue keeps the auth identity in step with the record: `create` provisions it, toggling to `INACTIVE` revokes it, toggling back to `ACTIVE` restores it, and `delete` removes it. Each call is made before the local write, and a failure aborts the operation. The generated `userId` is the identity surfaced into the JWT by the auth layer.
 
 > **Upgrading an existing deployment:** earlier versions indexed the credential hashes. After deploying, run `POST /user/v1/loadFromPrimary` to rebuild the index without them, and flush the cached `user` entries in Redis.

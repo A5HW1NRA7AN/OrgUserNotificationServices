@@ -257,7 +257,193 @@ class UserServiceImplTest {
         verifyNoInteractions(esUtilService, cacheService);
     }
 
+    // ---------------------------------------------------------------- expiry
+
+    @Test
+    void verifyRefusesAnExpiredPasswordOnlyAfterTheRightOne() {
+        storedData().put(Constants.PASSWORD_EXPIRES_ON, "2020-01-01T00:00:00Z");
+        when(userRepository.findByEmail(EMAIL)).thenReturn(List.of(stored));
+
+        CustomResponse right = userService.verifyUser(verifyRequest(EMAIL, PASSWORD));
+        CustomResponse wrong = userService.verifyUser(verifyRequest(EMAIL, "wrong"));
+
+        assertThat(right.getResponseCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(right.getMessage()).isEqualTo(Constants.PASSWORD_EXPIRED);
+        // A wrong password never learns that the account's password has expired.
+        assertThat(wrong.getResponseCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void aFutureBlankOrUnparseableExpiryStillVerifies() {
+        when(userRepository.findByEmail(EMAIL)).thenReturn(List.of(stored));
+        for (String date : new String[]{"2999-01-01T00:00:00+05:30", "", "not-a-date"}) {
+            storedData().put(Constants.PASSWORD_EXPIRES_ON, date);
+
+            assertThat(userService.verifyUser(verifyRequest(EMAIL, PASSWORD)).getResponseCode())
+                    .as("passwordExpiresOn=%s", date).isEqualTo(HttpStatus.OK);
+        }
+    }
+
+    // ---------------------------------------------------------------- verify_pin
+
+    @Test
+    void verifyPinReturnsTheUserIdForTheRightPin() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+
+        CustomResponse response = userService.verifyPin(pinRequest(USER_ID, PIN));
+
+        assertThat(response.getResponseCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getResult()).containsEntry(Constants.USER_ID_RQST, USER_ID);
+        verifyNoInteractions(esUtilService);
+    }
+
+    @Test
+    void verifyPinRejectsAWrongPinAndAnUnknownUser() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+        when(userRepository.findById("user-unknown")).thenReturn(Optional.empty());
+
+        assertThat(userService.verifyPin(pinRequest(USER_ID, "000000")).getResponseCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(userService.verifyPin(pinRequest("user-unknown", PIN)).getResponseCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void verifyPinRejectsAnInactiveRecordAndAnExpiredPin() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+
+        stored.setStatus(Constants.IN_ACTIVE);
+        CustomResponse inactive = userService.verifyPin(pinRequest(USER_ID, PIN));
+        stored.setStatus(Constants.ACTIVE);
+        storedData().put(Constants.PIN_EXPIRES_ON, "2020-01-01T00:00:00Z");
+        CustomResponse expired = userService.verifyPin(pinRequest(USER_ID, PIN));
+
+        assertThat(inactive.getResponseCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(inactive.getMessage()).isEqualTo(Constants.USER_NOT_ACTIVE);
+        assertThat(expired.getResponseCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(expired.getMessage()).isEqualTo(Constants.PIN_EXPIRED);
+    }
+
+    @Test
+    void verifyPinNeedsBothFieldsAndTouchesNoStore() {
+        CustomResponse response = userService.verifyPin(pinRequest(USER_ID, null));
+
+        assertThat(response.getResponseCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(userRepository, esUtilService);
+    }
+
+    // ---------------------------------------------------------------- 6-digit rule and pre-hashed input
+
+    @Test
+    void createRejectsAShortPinBeforeProvisioningAuth() {
+        ObjectNode payload = objectMapper.createObjectNode()
+                .put(Constants.EMAIL, EMAIL).put(Constants.PASSWORD, PASSWORD).put(Constants.PIN, "1234");
+
+        assertThatThrownBy(() -> userService.createUser(payload))
+                .isInstanceOfSatisfying(CustomException.class, e -> {
+                    assertThat(e.getHttpStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(e.getMessage()).isEqualTo(Constants.PIN_MUST_BE_SIX_DIGITS);
+                });
+        verifyNoInteractions(authUserService, userRepository);
+    }
+
+    @Test
+    void updateStoresPreHashedCredentialsAsSent() {
+        // The portals hash before sending; the catalogue must not hash them a second time.
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+        String portalPasswordHash = HashUtil.encode("portal-password");
+        ObjectNode incoming = objectMapper.createObjectNode()
+                .put(Constants.EMAIL, EMAIL)
+                .put(Constants.PASSWORD, portalPasswordHash)
+                .put(Constants.PIN, PIN_HASH);
+
+        userService.updateUser(USER_ID, incoming);
+
+        ArgumentCaptor<UserEntity> saved = ArgumentCaptor.forClass(UserEntity.class);
+        verify(userRepository).save(saved.capture());
+        assertThat(saved.getValue().getData().get(Constants.PASSWORD).asText()).isEqualTo(portalPasswordHash);
+        assertThat(saved.getValue().getData().get(Constants.PIN).asText()).isEqualTo(PIN_HASH);
+    }
+
+    // ---------------------------------------------------------------- update sync to auth
+
+    @Test
+    void updateSyncsTheProfileToAuthAndSurvivesItsFailure() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+        when(authUserService.updateAuthUser(any(), any(), eq(EMAIL), eq(USER_ID), any(), any(), any(), any()))
+                .thenThrow(new ResourceAccessException("auth down"));
+
+        CustomResponse response = userService.updateUser(USER_ID, objectMapper.createObjectNode()
+                .put(Constants.EMAIL, EMAIL).put(Constants.DISPLAY_NAME, "Asha R"));
+
+        assertThat(response.getResponseCode()).isEqualTo(HttpStatus.OK);
+        verify(authUserService).updateAuthUser(any(), any(), eq(EMAIL), eq(USER_ID), any(), any(), any(), eq("Asha R"));
+    }
+
+    @Test
+    void updateDoesNotSyncARecordWithNoAuthIdentity() {
+        stored.setStatus(Constants.DRAFT);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+
+        userService.updateUser(USER_ID, objectMapper.createObjectNode().put(Constants.EMAIL, EMAIL));
+
+        verify(authUserService, never()).updateAuthUser(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    // ---------------------------------------------------------------- pin change
+
+    @Test
+    void pinChangeNeedsTheCurrentPassword() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+
+        CustomResponse response = userService.updatePin(USER_ID, pinChange("wrong", "135790"));
+
+        assertThat(response.getResponseCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void pinChangeRejectsANonSixDigitPin() {
+        CustomResponse response = userService.updatePin(USER_ID, pinChange(PASSWORD, "12ab56"));
+
+        assertThat(response.getResponseCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getMessage()).isEqualTo(Constants.PIN_MUST_BE_SIX_DIGITS);
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void pinChangeStoresTheNewPinHashedAndClearsAStaleExpiry() {
+        storedData().put(Constants.PIN_EXPIRES_ON, "2020-01-01T00:00:00Z");
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+
+        CustomResponse response = userService.updatePin(USER_ID, pinChange(PASSWORD, "135790"));
+
+        assertThat(response.getResponseCode()).isEqualTo(HttpStatus.OK);
+        ArgumentCaptor<UserEntity> saved = ArgumentCaptor.forClass(UserEntity.class);
+        verify(userRepository).save(saved.capture());
+        JsonNode data = saved.getValue().getData();
+        assertThat(HashUtil.matches("135790", data.get(Constants.PIN).asText())).isTrue();
+        assertThat(data.get(Constants.PASSWORD).asText()).isEqualTo(PASSWORD_HASH);
+        assertThat(data.has(Constants.PIN_EXPIRES_ON)).isFalse();
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private ObjectNode storedData() {
+        return (ObjectNode) stored.getData();
+    }
+
+    private JsonNode pinRequest(String userId, String pin) {
+        ObjectNode node = objectMapper.createObjectNode();
+        if (userId != null) node.put(Constants.USER_ID_RQST, userId);
+        if (pin != null) node.put(Constants.PIN, pin);
+        return node;
+    }
+
+    private JsonNode pinChange(String currentPassword, String newPin) {
+        return objectMapper.createObjectNode()
+                .put(Constants.CURRENT_PASSWORD, currentPassword).put(Constants.NEW_PIN, newPin);
+    }
 
     private JsonNode verifyRequest(String email, String password) {
         ObjectNode node = objectMapper.createObjectNode();

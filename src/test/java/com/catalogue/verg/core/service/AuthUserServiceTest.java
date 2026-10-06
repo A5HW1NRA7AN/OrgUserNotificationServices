@@ -92,6 +92,17 @@ class AuthUserServiceTest {
                 .isInstanceOf(HttpClientErrorException.NotFound.class);
     }
 
+    @Test
+    void updatePostsToTheUpdatePath() {
+        stubExchange(ResponseEntity.ok(Map.of()));
+
+        authUserService.updateAuthUser("Asha", "Rao", "asha@example.org", USER_ID,
+                "org-1", "FIELD_OFFICER", "Org", "Asha R");
+
+        HttpEntity<Map<String, Object>> sent = captureExchange(BASE + AuthUserService.AUTH_USER_UPDATE_PATH);
+        assertThat(sent.getBody()).containsEntry("userId", USER_ID).containsEntry("displayName", "Asha R");
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static HttpClientErrorException notFound(String body) {

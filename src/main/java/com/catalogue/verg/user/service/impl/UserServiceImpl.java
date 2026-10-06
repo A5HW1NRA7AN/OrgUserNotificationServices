@@ -44,12 +44,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 // import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 
 @Service
@@ -99,6 +103,8 @@ public class UserServiceImpl implements UserService {
 
     private Logger logger = LoggerFactory.getLogger(UserServiceImpl.class);
 
+    private static final Pattern SIX_DIGIT_PIN = Pattern.compile("^[0-9]{6}$");
+
     @Value("${spring.redis.cacheTtl}")
     private long searchResultRedisTtl;
 
@@ -107,6 +113,7 @@ public class UserServiceImpl implements UserService {
         log.info("UserServiceImpl::createUser:entered the method: " + userEntity);
         CustomResponse response = new CustomResponse();
         payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userEntity);
+        requireSixDigitPin(userEntity);
 
         log.debug("UserServiceImpl::createUser:validated the payload");
 
@@ -247,6 +254,14 @@ public class UserServiceImpl implements UserService {
                 return response;
             }
 
+            // 4. Has the password expired? Only revealed after the right password.
+            if (expired(user.getData(), Constants.PASSWORD_EXPIRES_ON)) {
+                log.warn("UserServiceImpl::verifyUser:password expired for userId: {}", user.getUserId());
+                response.setResponseCode(HttpStatus.FORBIDDEN);
+                response.setMessage(Constants.PASSWORD_EXPIRED);
+                return response;
+            }
+
             log.info("UserServiceImpl::verifyUser:credentials verified for userId: {}",
                     user.getUserId());
             response.getResult().put(Constants.USER_ID_RQST, user.getUserId());
@@ -262,7 +277,146 @@ public class UserServiceImpl implements UserService {
         }
     }
 
-   
+    @Override
+    public CustomResponse verifyPin(JsonNode verifyRequest) {
+        log.info("UserServiceImpl::verifyPin:entered the method");
+        CustomResponse response = new CustomResponse();
+        String userId = textValue(verifyRequest, Constants.USER_ID_RQST);
+        String pin = textValue(verifyRequest, Constants.PIN);
+
+        if (StringUtils.isEmpty(userId) || StringUtils.isEmpty(pin)) {
+            log.warn("UserServiceImpl::verifyPin:userId or pin missing on the payload");
+            response.setResponseCode(HttpStatus.BAD_REQUEST);
+            response.setMessage(Constants.USER_ID_PIN_REQUIRED);
+            return response;
+        }
+
+        try {
+            // 1. Does the user exist? Postgres only: the pin hash is never indexed.
+            Optional<UserEntity> entityOptional = userRepository.findById(userId);
+            if (entityOptional.isEmpty()) {
+                log.warn("UserServiceImpl::verifyPin:no user found for userId: {}", userId);
+                response.setResponseCode(HttpStatus.UNAUTHORIZED);
+                response.setMessage(Constants.INVALID_CREDENTIALS);
+                return response;
+            }
+            UserEntity user = entityOptional.get();
+
+            // 2. Does the pin match the stored hash?
+            if (!HashUtil.matches(pin, textValue(user.getData(), Constants.PIN))) {
+                log.warn("UserServiceImpl::verifyPin:pin mismatch for userId: {}", userId);
+                response.setResponseCode(HttpStatus.UNAUTHORIZED);
+                response.setMessage(Constants.INVALID_CREDENTIALS);
+                return response;
+            }
+
+            // 3. Is the record live?
+            String status = user.getStatus();
+            if (!Constants.ACTIVE.equals(status)) {
+                log.warn("UserServiceImpl::verifyPin:user is {}, not ACTIVE", status);
+                response.setResponseCode(HttpStatus.FORBIDDEN);
+                response.setMessage(Constants.USER_NOT_ACTIVE);
+                return response;
+            }
+
+            // 4. Has the pin expired? Only revealed after the right pin.
+            if (expired(user.getData(), Constants.PIN_EXPIRES_ON)) {
+                log.warn("UserServiceImpl::verifyPin:pin expired for userId: {}", userId);
+                response.setResponseCode(HttpStatus.FORBIDDEN);
+                response.setMessage(Constants.PIN_EXPIRED);
+                return response;
+            }
+
+            log.info("UserServiceImpl::verifyPin:pin verified for userId: {}", userId);
+            response.getResult().put(Constants.USER_ID_RQST, userId);
+            response.getResult().put(Constants.STATUS, status);
+            response.setMessage(Constants.SUCCESSFULLY_VERIFIED);
+            response.setResponseCode(HttpStatus.OK);
+            return response;
+        } catch (Exception e) {
+            log.error("UserServiceImpl::verifyPin:error while verifying the pin", e);
+            throw new CustomException("error while processing", e.getMessage(),
+                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    @Override
+    public CustomResponse updatePin(String id, JsonNode pinRequest) {
+        log.info("UserServiceImpl::updatePin:entered the method with id: {}", id);
+        CustomResponse response = new CustomResponse();
+        String currentPassword = textValue(pinRequest, Constants.CURRENT_PASSWORD);
+        String newPin = textValue(pinRequest, Constants.NEW_PIN);
+
+        if (StringUtils.isEmpty(id) || StringUtils.isEmpty(currentPassword) || StringUtils.isEmpty(newPin)) {
+            response.setResponseCode(HttpStatus.BAD_REQUEST);
+            response.setMessage(Constants.PIN_CHANGE_FIELDS_REQUIRED);
+            return response;
+        }
+        // The user types the new pin here, so a hash is not accepted.
+        if (!SIX_DIGIT_PIN.matcher(newPin).matches()) {
+            response.setResponseCode(HttpStatus.BAD_REQUEST);
+            response.setMessage(Constants.PIN_MUST_BE_SIX_DIGITS);
+            return response;
+        }
+
+        Optional<UserEntity> entityOptional = userRepository.findById(id);
+        if (entityOptional.isEmpty()) {
+            response.setResponseCode(HttpStatus.NOT_FOUND);
+            response.setMessage(Constants.INVALID_ID);
+            return response;
+        }
+        UserEntity user = entityOptional.get();
+
+        // Only the account's own password may change its pin.
+        if (!HashUtil.matches(currentPassword, textValue(user.getData(), Constants.PASSWORD))) {
+            log.warn("UserServiceImpl::updatePin:password mismatch for id: {}", id);
+            response.setResponseCode(HttpStatus.UNAUTHORIZED);
+            response.setMessage(Constants.INVALID_CREDENTIALS);
+            return response;
+        }
+        if (!Constants.ACTIVE.equals(user.getStatus())) {
+            response.setResponseCode(HttpStatus.FORBIDDEN);
+            response.setMessage(Constants.USER_NOT_ACTIVE);
+            return response;
+        }
+
+        // The stored record with the new pin; updateUser hashes it, carries the password forward and re-indexes.
+        ObjectNode payload = ((ObjectNode) user.getData()).deepCopy();
+        payload.remove(Constants.PASSWORD);
+        payload.put(Constants.PIN, newPin);
+        // The caller's expiry for the new pin, or none: a stale past date must not expire it at once.
+        String pinExpiresOn = textValue(pinRequest, Constants.PIN_EXPIRES_ON);
+        if (StringUtils.isNotBlank(pinExpiresOn)) {
+            payload.put(Constants.PIN_EXPIRES_ON, pinExpiresOn);
+        } else {
+            payload.remove(Constants.PIN_EXPIRES_ON);
+        }
+        return updateUser(id, payload);
+    }
+
+    /** True when the ISO-8601 date in this field has passed; blank or unparseable never expires. */
+    private boolean expired(JsonNode data, String field) {
+        String value = textValue(data, field);
+        if (StringUtils.isBlank(value)) {
+            return false;
+        }
+        try {
+            return OffsetDateTime.parse(value).toInstant().isBefore(Instant.now());
+        } catch (DateTimeParseException e) {
+            log.warn("UserServiceImpl::expired:unparseable {} '{}', treated as not expired", field, value);
+            return false;
+        }
+    }
+
+    /** Rejects a plaintext pin that is not 6 digits; a pre-hashed pin is left to its sender. */
+    private void requireSixDigitPin(JsonNode payload) {
+        String pin = textValue(payload, Constants.PIN);
+        if (StringUtils.isNotBlank(pin) && !HashUtil.isHash(pin) && !SIX_DIGIT_PIN.matcher(pin).matches()) {
+            throw new CustomException(Constants.FAILED_CONST, Constants.PIN_MUST_BE_SIX_DIGITS,
+                    HttpStatus.BAD_REQUEST);
+        }
+    }
+
     /** Aborts with a 502 unless auth_service accepted the call; nothing is persisted before it. */
     private void requireAuth(ResponseEntity<Map<String, Object>> authResponse, String userId, String failure) {
         if (authResponse == null || !authResponse.getStatusCode().is2xxSuccessful()) {
@@ -400,6 +554,7 @@ public class UserServiceImpl implements UserService {
             }
 
             // Validated after the merge: omitted credentials carry forward from the stored record.
+            requireSixDigitPin(userEntity);
             JsonNode userPayload = mergeCredentials(userEntity, userEntity1.getData());
             payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userPayload);
             log.debug("UserServiceImpl::updateUser:validated the payload");
@@ -422,6 +577,24 @@ public class UserServiceImpl implements UserService {
             // Refresh the Redis cache
             cacheService.putCache(id, jsonNode);
             log.info("UserServiceImpl::updateUser:refreshed cache for id: {}", id);
+
+            // Best-effort sync to auth_service: only ACTIVE/INACTIVE records have an identity there.
+            String status = userEntity1.getStatus();
+            if (Constants.ACTIVE.equals(status) || Constants.IN_ACTIVE.equals(status)) {
+                try {
+                    authUserService.updateAuthUser(
+                            textValue(userPayload, Constants.FIRST_NAME),
+                            textValue(userPayload, Constants.LAST_NAME),
+                            textValue(userPayload, Constants.EMAIL),
+                            id,
+                            textValue(userPayload, Constants.ORG_ID_RQST),
+                            textValue(userPayload, Constants.FUNCTIONAL_ROLE),
+                            textValue(userPayload, Constants.ORG_NAME),
+                            textValue(userPayload, Constants.DISPLAY_NAME));
+                } catch (Exception e) {
+                    log.error("UserServiceImpl::updateUser:auth_user_update failed for id: {}", id, e);
+                }
+            }
 
             map.put(Constants.USER_ID_RQST, id);
             response.setResult(map);
@@ -538,6 +711,7 @@ public class UserServiceImpl implements UserService {
         CustomResponse response = new CustomResponse();
         // Relaxed validation: types/structure enforced, but required fields may be missing
         payloadValidation.validatePayloadRelaxed(Constants.USER_VALIDATION_FILE_JSON, userEntity);
+        requireSixDigitPin(userEntity);
         log.debug("UserServiceImpl::draftUser:validated the payload (relaxed)");
         try {
             UserEntity userEntity1 = new UserEntity();
@@ -585,6 +759,7 @@ public class UserServiceImpl implements UserService {
         }
         // Full validation: all required fields must be present to submit for approval
         payloadValidation.validatePayload(Constants.USER_VALIDATION_FILE_JSON, userEntity);
+        requireSixDigitPin(userEntity);
         log.debug("UserServiceImpl::addUser:validated the payload");
         try {
             Optional<UserEntity> entityOptional = userRepository.findById(id);

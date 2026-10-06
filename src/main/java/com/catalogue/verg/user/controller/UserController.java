@@ -83,6 +83,20 @@ public class UserController {
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
+    // Verifies {userId, pin} for an ACTIVE record; internal only, like /v1/verify.
+    @PostMapping("/v1/verify_pin")
+    public ResponseEntity<CustomResponse> verifyPin(@RequestBody JsonNode verifyRequest) {
+        CustomResponse response = userService.verifyPin(verifyRequest);
+        return new ResponseEntity<>(response, response.getResponseCode());
+    }
+
+    // Changes the PIN, authorised by the current password: {currentPassword, newPin, pinExpiresOn?}
+    @PutMapping("/v1/update/{id}/pin")
+    public ResponseEntity<CustomResponse> updatePin(@PathVariable String id, @RequestBody JsonNode pinRequest) {
+        CustomResponse response = userService.updatePin(id, pinRequest);
+        return new ResponseEntity<>(response, response.getResponseCode());
+    }
+
     @PostMapping("/v1/search")
     public ResponseEntity<?> search(@RequestBody SearchCriteria searchCriteria) {
         CustomResponse response = userService.searchUser(searchCriteria);

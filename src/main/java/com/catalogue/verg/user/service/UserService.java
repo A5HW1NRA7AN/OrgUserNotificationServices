@@ -31,6 +31,12 @@ public interface UserService {
     // Verifies {email, password}: registered email, matching BCrypt hash, ACTIVE record
     CustomResponse verifyUser(JsonNode verifyRequest);
 
+    // Verifies {userId, pin}: matching BCrypt hash, ACTIVE record, PIN not expired
+    CustomResponse verifyPin(JsonNode verifyRequest);
+
+    // Changes the PIN, authorised by the current password
+    CustomResponse updatePin(String id, JsonNode pinRequest);
+
     CustomResponse searchUser(SearchCriteria searchCriteria);
 
     CustomResponse assignUser(JsonNode userEntity, String token);

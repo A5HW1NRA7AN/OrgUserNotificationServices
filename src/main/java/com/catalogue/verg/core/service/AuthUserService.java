@@ -16,12 +16,13 @@ import org.springframework.web.client.RestTemplate;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Client for auth_service: creates, revokes and deletes the auth identity with the record. */
+/** Client for auth_service: creates, updates, revokes and deletes the auth identity with the record. */
 @Slf4j
 @Service
 public class AuthUserService {
 
     static final String AUTH_USER_CREATE_PATH = "/auth/v1/auth_user_create";
+    static final String AUTH_USER_UPDATE_PATH = "/auth/v1/auth_user_update";
     static final String AUTH_USER_REVOKE_PATH = "/auth/v1/auth_user_revoke";
     static final String AUTH_USER_DELETE_PATH = "/auth/v1/auth_user_delete";
     static final String AUTH_USER_NOT_FOUND_CODE = "AUTH_USER_NOT_FOUND";
@@ -42,6 +43,21 @@ public class AuthUserService {
     public ResponseEntity<Map<String, Object>> createAuthUser(String firstName, String lastName, String email,
                                                               String userId, String orgId, String functionalRole,
                                                               String orgName, String displayName) {
+        return post(AUTH_USER_CREATE_PATH,
+                userRequest(firstName, lastName, email, userId, orgId, functionalRole, orgName, displayName), userId);
+    }
+
+    /** Syncs a profile edit via auth_user_update (replace: an omitted optional field is cleared). */
+    public ResponseEntity<Map<String, Object>> updateAuthUser(String firstName, String lastName, String email,
+                                                              String userId, String orgId, String functionalRole,
+                                                              String orgName, String displayName) {
+        return post(AUTH_USER_UPDATE_PATH,
+                userRequest(firstName, lastName, email, userId, orgId, functionalRole, orgName, displayName), userId);
+    }
+
+    /** The body auth_user_create and auth_user_update share. */
+    private Map<String, Object> userRequest(String firstName, String lastName, String email, String userId,
+                                            String orgId, String functionalRole, String orgName, String displayName) {
         // auth_service's request contract; functionalRole and email are required there.
         Map<String, Object> request = new HashMap<>();
         request.put("firstName", firstName);
@@ -52,8 +68,7 @@ public class AuthUserService {
         request.put("functionalRole", functionalRole);
         request.put("orgName", orgName);
         request.put("displayName", displayName);
-
-        return post(AUTH_USER_CREATE_PATH, request, userId);
+        return request;
     }
 
     /** Blocks the account in auth_service when a record leaves ACTIVE. Idempotent. */

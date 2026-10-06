@@ -101,6 +101,19 @@ public class Constants{
     public static final String USER_NOT_ACTIVE = "User is not active";
     public static final String SUCCESSFULLY_VERIFIED = "successfully verified";
 
+    // Credential expiry: ISO-8601 dates set by the caller; a blank value never expires
+    public static final String PASSWORD_EXPIRES_ON = "passwordExpiresOn";
+    public static final String PIN_EXPIRES_ON = "pinExpiresOn";
+    public static final String PASSWORD_EXPIRED = "Password has expired";
+    public static final String PIN_EXPIRED = "PIN has expired";
+
+    // PIN verification (/user/v1/verify_pin) and change (/user/v1/update/{id}/pin)
+    public static final String CURRENT_PASSWORD = "currentPassword";
+    public static final String NEW_PIN = "newPin";
+    public static final String USER_ID_PIN_REQUIRED = "userId and pin are required";
+    public static final String PIN_CHANGE_FIELDS_REQUIRED = "currentPassword and newPin are required";
+    public static final String PIN_MUST_BE_SIX_DIGITS = "PIN must be exactly 6 digits";
+
     
     // Org Specific Constants
     public static final String ORG_VALIDATION_FILE_JSON = "/payloadValidation/orgPayloadValidation.json";

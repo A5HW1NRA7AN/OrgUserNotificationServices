@@ -7,6 +7,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.util.regex.Pattern;
+
 /** BCrypt for stored credentials; salted per call, so verify with matches(), never by re-hashing. */
 @Slf4j
 public final class HashUtil {
@@ -16,15 +18,24 @@ public final class HashUtil {
 
     private static final PasswordEncoder ENCODER = new BCryptPasswordEncoder(STRENGTH);
 
+    /** A complete BCrypt hash; the portals send credentials already hashed. */
+    private static final Pattern BCRYPT_HASH = Pattern.compile("^\\$2[aby]\\$\\d{2}\\$[./A-Za-z0-9]{53}$");
+
     private HashUtil() {
     }
 
-    /** BCrypt hash (60 chars) of a raw secret; throws IllegalArgumentException for null. */
+    /** BCrypt hash (60 chars) of a raw secret; an existing hash is returned as is. Throws for null. */
     public static String encode(String rawSecret) {
         if (rawSecret == null) {
             throw new IllegalArgumentException("HashUtil::rawSecret must not be null");
         }
-        return ENCODER.encode(rawSecret);
+        // Hashing a caller's hash again would store a hash of a hash and break login.
+        return isHash(rawSecret) ? rawSecret : ENCODER.encode(rawSecret);
+    }
+
+    /** True if the value is already a BCrypt hash. */
+    public static boolean isHash(String value) {
+        return value != null && BCRYPT_HASH.matcher(value).matches();
     }
 
     /** True if the secret matches the stored hash; false for nulls or a malformed hash. */
